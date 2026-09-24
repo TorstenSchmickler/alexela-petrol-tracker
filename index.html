@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alexela 95 Tracker</title>
+<meta name="description" content="Alexela 95 petrol price in Estonia, fetched hourly, with the 7-day low.">
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #ffffff; --text: #1c1c1a; --muted: #6b6b66; --line: #e4e4df;
+    --accent: #1f6feb; --low: #16803c; --low-bg: #e8f5ec; --band: rgba(31,111,235,.07);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #141413; --surface: #1d1d1b; --text: #ececea; --muted: #9a9a94; --line: #2e2e2b;
+      --accent: #6ea8ff; --low: #4ade80; --low-bg: #16301f; --band: rgba(110,168,255,.08);
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 48px; }
+  h1 { font-size: 1.25rem; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: .9rem; margin: 0 0 24px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .tile.low { background: var(--low-bg); border-color: transparent; }
+  .label { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  .tile.low .label { color: var(--low); }
+  .value { font-size: 2rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .value small { font-size: .9rem; font-weight: 400; color: var(--muted); }
+  .note { color: var(--muted); font-size: .85rem; }
+  section { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+  h2 { font-size: .95rem; margin: 0 0 12px; }
+  svg { width: 100%; height: auto; display: block; }
+  svg text { fill: var(--muted); font-size: 11px; font-family: inherit; }
+  table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+  td, th { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: .85rem; }
+  td:last-child, th:last-child { text-align: right; }
+  tr.is-low td { color: var(--low); font-weight: 600; }
+  footer { color: var(--muted); font-size: .8rem; }
+  a { color: var(--accent); }
+  #error { color: #c62828; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Alexela 95 petrol</h1>
+  <p class="sub" id="updated">Loading…</p>
+
+  <div class="tiles">
+    <div class="tile low">
+      <div class="label">7-day low</div>
+      <div class="value" id="low">–</div>
+      <div class="note" id="lowWhen"></div>
+    </div>
+    <div class="tile">
+      <div class="label">Current</div>
+      <div class="value" id="current">–</div>
+      <div class="note" id="vsLow"></div>
+    </div>
+  </div>
+
+  <section>
+    <h2>Last 30 days</h2>
+    <div id="chart"></div>
+  </section>
+
+  <section>
+    <h2>Last 7 days</h2>
+    <table><thead><tr><th>Date</th><th>€/l</th></tr></thead><tbody id="rows"></tbody></table>
+  </section>
+
+  <p id="error"></p>
+  <footer>Prices fetched hourly from <a href="https://xydata.ee/kutus/alexela">xydata.ee</a> by a GitHub Action. Nationwide Alexela price; individual stations may differ.</footer>
+</main>
+
+<script>
+const fmt = p => p.toFixed(3);
+const dayLabel = iso => new Date(iso + "T12:00:00").toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+const tallinnToday = () => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Tallinn" }).format(new Date());
+const addDays = (iso, n) => { const d = new Date(iso + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+
+function sevenDayLow(data, start) {
+  const c = Object.entries(data.daily).filter(([d]) => d >= start).map(([d, p]) => ({ p, when: d, hourly: false }));
+  for (const r of data.readings) if (r.t.slice(0, 10) >= start) c.push({ p: r.p, when: r.t, hourly: true });
+  return c.sort((a, b) => a.p - b.p || a.when.localeCompare(b.when))[0];
+}
+
+function chart(days, start, low) {
+  const W = 700, H = 220, L = 44, R = 12, T = 12, B = 26;
+  const ps = days.map(([, p]) => p);
+  const min = Math.min(...ps) - 0.01, max = Math.max(...ps) + 0.01;
+  const x = i => L + (i / Math.max(days.length - 1, 1)) * (W - L - R);
+  const y = p => T + (1 - (p - min) / (max - min)) * (H - T - B);
+  const pts = days.map(([, p], i) => `${x(i).toFixed(1)},${y(p).toFixed(1)}`).join(" ");
+  const si = days.findIndex(([d]) => d >= start);
+  let g = "";
+  for (let k = 0; k <= 3; k++) {
+    const v = min + (k / 3) * (max - min);
+    g += `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 6}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(2)}</text>`;
+  }
+  const band = si >= 0 ? `<rect x="${x(si)}" y="${T}" width="${W - R - x(si)}" height="${H - T - B}" fill="var(--band)"/><text x="${W - R - 4}" y="${T + 12}" text-anchor="end">last 7 days</text>` : "";
+  const li = days.findIndex(([d]) => d === (low && low.when.slice(0, 10)));
+  const lowDot = li >= 0 && !low.hourly ? `<circle cx="${x(li)}" cy="${y(days[li][1])}" r="5" fill="var(--low)"/>` : "";
+  const ticks = [0, Math.floor((days.length - 1) / 2), days.length - 1]
+    .map(i => `<text x="${x(i)}" y="${H - 6}" text-anchor="${i === 0 ? "start" : i === days.length - 1 ? "end" : "middle"}">${dayLabel(days[i][0])}</text>`).join("");
+  document.getElementById("chart").innerHTML =
+    `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Daily Alexela 95 price, last 30 days">${band}${g}
+     <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2" stroke-linejoin="round"/>${lowDot}${ticks}</svg>`;
+}
+
+fetch("data/prices.json", { cache: "no-store" })
+  .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+  .then(data => {
+    const today = tallinnToday(), start = addDays(today, -6);
+    const low = sevenDayLow(data, start);
+    const last = data.readings[data.readings.length - 1];
+    const days = Object.entries(data.daily).sort().slice(-30);
+
+    document.getElementById("updated").textContent =
+      `Updated ${new Date(data.updated).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}`;
+    if (low) {
+      document.getElementById("low").innerHTML = `${fmt(low.p)} <small>€/l</small>`;
+      document.getElementById("lowWhen").textContent = low.hourly
+        ? new Date(low.when).toLocaleString("en-GB", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+        : dayLabel(low.when);
+    }
+    if (last) {
+      document.getElementById("current").innerHTML = `${fmt(last.p)} <small>€/l</small>`;
+      if (low) {
+        const d = last.p - low.p;
+        document.getElementById("vsLow").textContent = d <= 0.0005 ? "At the 7-day low" : `+${(d * 100).toFixed(1)} cents above the low`;
+      }
+    }
+    if (days.length) chart(days, start, low);
+    document.getElementById("rows").innerHTML = days.filter(([d]) => d >= start).reverse()
+      .map(([d, p]) => `<tr class="${low && !low.hourly && d === low.when ? "is-low" : ""}"><td>${dayLabel(d)}</td><td>${fmt(p)}</td></tr>`).join("");
+  })
+  .catch(e => { document.getElementById("updated").textContent = ""; document.getElementById("error").textContent = `Could not load prices (${e.message}).`; });
+</script>
+</body>
+</html>
